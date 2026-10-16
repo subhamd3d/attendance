@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Company Attendance</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#1457d9">
+<style>
+:root{--b:#1457d9;--bd:#0d3c9e;--bg:#f3f7ff;--t:#10213f;--m:#5b6b86;--l:#d6e2fb}
+*{box-sizing:border-box}
+body{margin:0;font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--t)}
+header{background:var(--b);color:#fff;padding:12px 16px;padding-top:calc(12px + env(safe-area-inset-top));display:flex;justify-content:space-between;align-items:center;gap:8px}
+header b{font-size:1.1rem}header button{background:#fff;color:var(--b);border:0;border-radius:8px;padding:6px 12px;font:inherit;font-weight:600}
+main{max-width:980px;margin:0 auto;padding:16px}
+.card{background:#fff;border:1px solid var(--l);border-radius:14px;padding:16px;margin-bottom:16px}
+.narrow{max-width:380px;margin:12vh auto}
+h1,h2,h3{margin:0 0 8px}.muted{color:var(--m);margin:4px 0}
+label{display:block;font-weight:600;margin:12px 0 4px}
+input,select,textarea{width:100%;padding:10px;border:1px solid #b9c8e6;border-radius:8px;font:inherit;background:#fff}
+.btn{background:var(--b);color:#fff;border:0;border-radius:10px;padding:10px 16px;font:inherit;font-weight:600;cursor:pointer}
+.btn:disabled{opacity:.4;cursor:not-allowed}.btn.alt{background:#fff;color:var(--b);border:2px solid var(--b)}
+.btn.sm{padding:4px 10px;font-size:.85rem}
+.big{flex:1;min-width:140px;padding:26px 10px;font-size:1.25rem}
+.row{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end}.row>div{flex:1;min-width:140px}
+.tw{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:.9rem}
+th,td{padding:8px;border-bottom:1px solid var(--l);text-align:left;white-space:nowrap}
+.badge{padding:2px 8px;border-radius:99px;font-size:.8rem;font-weight:600}
+.PENDING,.FLAGGED{background:#fff1cc;color:#7a4e00}.SYNCED,.VALID{background:#dcf4e6;color:#0a6b3a}
+.FAILED,.REJECTED{background:#fde1e2;color:#a11d24}.CORRECTED{background:#e1ebff;color:#0d3c9e}
+.tabs{display:flex;gap:6px;overflow-x:auto;margin-bottom:12px}
+.tabs button{border:1px solid var(--b);background:#fff;color:var(--b);border-radius:99px;padding:6px 14px;font:inherit;font-weight:600;white-space:nowrap}
+.tabs button.on{background:var(--b);color:#fff}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px}
+.stat b{font-size:1.9rem;display:block;line-height:1.1}
+#toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom));transform:translateX(-50%);background:var(--t);color:#fff;padding:10px 16px;border-radius:10px;max-width:90%;display:none;z-index:9}
+#toast.err{background:#a11d24}
+:focus-visible{outline:3px solid #ffb703;outline-offset:2px}
+</style></head><body>
+<div id="app"></div><div id="toast" role="status" aria-live="polite"></div>
+<script>
+const API='https://script.google.com/macros/s/AKfycbyVGVE5zVWbt5Oq6D9fBQrc2NOgR5bvhgrxYZG4w35wiPHfK1U1IYV6Rb3rhaLlB7gDUA/exec'; // see deployment steps
+const g=id=>document.getElementById(id), val=id=>g(id).value.trim();
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt=i=>i?new Date(i).toLocaleString('en-IN',{timeZone:'Asia/Kolkata',day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',hour12:true}):'';
+const today=()=>new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Kolkata'});
+const badge=s=>({h:`<span class="badge ${esc(s)}">${esc(s==='PENDING'?'PENDING SYNC':s)}</span>`});
+const tbl=(h,rows)=>`<div class="tw"><table><thead><tr>${h.map(x=>`<th>${esc(x)}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${r.map(c=>`<td>${c&&c.h!==undefined?c.h:esc(c)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+const field=(l,id,t='text',x='')=>`<div><label for="${id}">${l}</label><input id="${id}" type="${t}" ${x}></div>`;
+let S={token:localStorage.getItem('tk')||'',d:null,tab:'sum'},toastT;
+function toast(m,err){const t=g('toast');t.textContent=m;t.className=err?'err':'';t.style.display='block';clearTimeout(toastT);toastT=setTimeout(()=>t.style.display='none',3500);}
+async function run(fn){try{await fn()}catch(e){toast(e.msg||'Something went wrong',1)}}
+const view=h=>g('app').innerHTML=h;
+
+async function api(action,data={}){
+  let j;
+  try{const r=await fetch(API,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action,token:S.token,...data})});j=await r.json();}
+  catch(e){throw {net:true,msg:'No connection to the server'};}
+  if(!j.ok){if(j.auth){S.token='';localStorage.removeItem('tk');}throw {msg:j.error||'Error',auth:j.auth};}
+  return j.data;
+}
+/* ---- offline queue (IndexedDB) ---- */
+const idb=new Promise((res,rej)=>{const r=indexedDB.open('att',1);r.onupgradeneeded=()=>r.result.createObjectStore('q',{keyPath:'idemKey'});r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)});
+const tx=async(m,fn)=>{const d=await idb;return new Promise((res,rej)=>{const t=d.transaction('q',m),q=fn(t.objectStore('q'));t.oncomplete=()=>res(q&&q.result);t.onerror=()=>rej(t.error)})};
+const qPut=o=>tx('readwrite',s=>s.put(o)), qAll=()=>tx('readonly',s=>s.getAll()).then(a=>a||[]);
+let syncing=false;
+async function sync(){
+  if(syncing||!S.token||!S.d)return;syncing=true;
+  try{
+    const items=(await qAll()).filter(x=>x.status==='PENDING'&&x.empId===S.d.profile.EmpID).sort((a,b)=>a.clientTime<b.clientTime?-1:1);
+    for(const it of items){
+      try{
+        const r=await api('punch',{type:it.type,idemKey:it.idemKey,offline:it.offline,clientTime:it.clientTime,lat:it.lat,lng:it.lng,acc:it.acc});
+        it.status=r.event.Validation==='REJECTED'?'FAILED':'SYNCED';it.error=r.event.Reason||'';await qPut(it);
+      }catch(e){
+        if(e.net||e.auth){it.offline=true;await qPut(it);break;} // keep pending, time becomes device-reported
+        it.status='FAILED';it.error=e.msg;await qPut(it);
+      }
+    }
+  }finally{syncing=false}
+}
+const getLoc=()=>new Promise(r=>{if(!navigator.geolocation)return r(null);navigator.geolocation.getCurrentPosition(p=>r({lat:p.coords.latitude,lng:p.coords.longitude,acc:Math.round(p.coords.accuracy)}),()=>r(null),{enableHighAccuracy:true,timeout:15000,maximumAge:0});});
+
+/* ---- login / boot ---- */
+function loginView(){view(`<main><form class="card narrow" onsubmit="return doLogin(event)"><h1>Sign in</h1><p class="muted">Use the Employee ID and PIN given by your admin.</p>${field('Employee ID','eid','text','autocomplete="username" required autocapitalize="characters"')}${field('PIN','pin','password','autocomplete="current-password" required')}<p></p><button class="btn" style="width:100%">Sign in</button></form></main>`);}
+async function doLogin(e){e.preventDefault();await run(async()=>{const r=await api('login',{empId:val('eid'),pin:g('pin').value});S.token=r.token;localStorage.setItem('tk',r.token);await boot();});return false;}
+async function logout(){try{await api('logout')}catch(e){}S.token='';S.d=null;localStorage.removeItem('tk');localStorage.removeItem('me');loginView();}
+const head=()=>`<header><b>Attendance</b><span>${esc(S.d.profile.Name)} <button onclick="logout()">Sign out</button></span></header>`;
+async function boot(){
+  if(!S.token)return loginView();
+  try{S.d=await api('me');localStorage.setItem('me',JSON.stringify(S.d));}
+  catch(e){
+    if(e.auth||!localStorage.getItem('me'))return loginView();
+    S.d=JSON.parse(localStorage.getItem('me')); // offline: show last known data
+    toast('Offline: showing last saved data');
+  }
+  if(S.d.profile.Role==='ADMIN')return adminView();
+  await sync();await empView();
+}
+/* ---- employee ---- */
+async function empView(){
+  const p=S.d.profile,open=S.d.open;
+  let leaves=[];try{leaves=await api('leaveList')}catch(e){}
+  const q=(await qAll()).filter(x=>x.empId===p.EmpID).sort((a,b)=>a.clientTime<b.clientTime?1:-1).slice(0,15);
+  view(`${head()}<main><section class="card"><p class="muted">${esc(p.EmpID)}, ${esc(p.Dept)} ${p.WorkType==='OFFICE'?'. Office: '+esc(p.BranchName||'not assigned'):'. Field work'}</p>
+  <h2>${open?'Checked in since '+esc(fmt(S.d.last.At)):'Not checked in'}</h2>
+  <div class="row"><button class="btn big" ${open?'disabled':''} onclick="doPunch('CHECK_IN')">Check in</button><button class="btn big alt" ${open?'':'disabled'} onclick="doPunch('CHECK_OUT')">Check out</button></div>
+  <p class="muted">${navigator.onLine?'Online':'Offline: events are saved on this phone and sent later'}</p></section>
+  ${q.length?`<section class="card"><h3>Sync status</h3>${tbl(['Time on device','Type','Status','Note'],q.map(x=>[fmt(x.clientTime),x.type.replace('_',' '),badge(x.status),x.error||'']))}<p><button class="btn sm" onclick="run(async()=>{await sync();await boot()})">Sync now</button></p></section>`:''}
+  <section class="card"><h3>My attendance</h3>${S.d.history.length?tbl(['Time','Type','Result','Note'],S.d.history.slice(0,15).map(x=>[fmt(x.At),x.Type.replace('_',' '),badge(x.Validation),x.Reason])):'<p class="muted">No attendance yet. Check in to start.</p>'}</section>
+  <section class="card"><h3>Leave request</h3><form onsubmit="return doLeave(event)"><div class="row">${field('From','lf','date','required')}${field('To','lt','date','required')}</div>${field('Reason','lr','text','required maxlength="300"')}<p><button class="btn">Send request</button></p></form>
+  ${leaves.length?tbl(['From','To','Reason','Status'],leaves.map(l=>[l.From,l.To,l.Reason,l.Status])):'<p class="muted">No leave requests.</p>'}</section></main>`);
+}
+async function doPunch(type){await run(async()=>{
+  toast('Getting your location…');const loc=await getLoc();
+  await qPut({idemKey:crypto.randomUUID(),empId:S.d.profile.EmpID,type,clientTime:new Date().toISOString(),lat:loc&&loc.lat,lng:loc&&loc.lng,acc:loc&&loc.acc,status:'PENDING',offline:!navigator.onLine,error:''});
+  await sync();await boot();
+  const last=(await qAll()).filter(x=>x.type===type).sort((a,b)=>a.clientTime<b.clientTime?1:-1)[0];
+  toast(last.status==='SYNCED'?'Saved':last.status==='FAILED'?last.error:'Saved on this phone. Will sync when online.',last.status==='FAILED');
+});}
+async function doLeave(e){e.preventDefault();await run(async()=>{await api('leaveSubmit',{from:val('lf'),to:val('lt'),reason:val('lr')});toast('Leave request sent');await empView();});return false;}
+window.addEventListener('online',()=>{if(S.d&&S.d.profile.Role!=='ADMIN')run(async()=>{await sync();await boot()})});
+
+/* ---- admin ---- */
+const TABS=[['sum','Summary'],['rec','Records'],['emp','Employees'],['lv','Leave'],['fix','Correct'],['set','Setup']];
+function adminView(t){
+  S.tab=t||S.tab;
+  view(`${head()}<main><nav class="tabs" aria-label="Sections">${TABS.map(x=>`<button class="${x[0]===S.tab?'on':''}" onclick="adminView('${x[0]}')">${x[1]}</button>`).join('')}</nav><div id="tab"><p class="muted">Loading…</p></div></main>`);
+  run(()=>({sum:tabSum,rec:tabRec,emp:tabEmp,lv:tabLv,fix:tabFix,set:tabSet})[S.tab]());
+}
+async function tabSum(){
+  const d=await api('adminSummary',{date:S.sumDate||today()});
+  g('tab').innerHTML=`<div class="card">${field('Date','sd','date',`value="${esc(d.date)}" onchange="S.sumDate=this.value;adminView('sum')"`)}${d.holiday?`<p class="muted">${esc(d.holiday)}</p>`:''}</div>
+  <div class="stats">${[['Present',d.present],['Late',d.late],['Missing check-out',d.missing],['Absent',d.absent],['On leave',d.leave]].map(x=>`<div class="card stat"><b>${x[1].length}</b>${x[0]}</div>`).join('')}</div>
+  ${[['Late arrivals',d.late],['Missing check-outs',d.missing],['Absent',d.absent]].map(x=>`<div class="card"><h3>${x[0]}</h3>${x[1].length?tbl(['ID','Name','Dept','Time'],x[1].map(r=>[r.EmpID,r.Name,r.Dept,r.At||''])):'<p class="muted">None</p>'}</div>`).join('')}`;
+}
+async function tabRec(){
+  g('tab').innerHTML=`<form class="card" onsubmit="return recGo(event)"><div class="row">${field('From','rf','date')}${field('To','rt','date')}${field('Employee ID','re')}${field('Department','rd')}${field('Branch ID','rb')}<div><label for="rs">Status</label><select id="rs"><option value="">All</option>${['VALID','FLAGGED','REJECTED','CORRECTED'].map(x=>`<option>${x}</option>`).join('')}</select></div></div><p class="row"><button class="btn" style="flex:0">Search</button><button type="button" class="btn alt" style="flex:0" onclick="recCsv()">Export CSV</button></p></form><div id="rr"></div>`;
+}
+async function recGo(e){e.preventDefault();await run(async()=>{
+  S.rec=await api('adminAttendance',{from:val('rf'),to:val('rt'),empId:val('re'),dept:val('rd'),branch:val('rb'),status:val('rs')});
+  g('rr').innerHTML=`<div class="card">${S.rec.length?tbl(['Time','ID','Name','Type','Result','Source','Note'],S.rec.map(r=>[fmt(r.At),r.EmpID,r.Name,r.Type.replace('_',' '),badge(r.Validation),r.Source,r.Reason])):'<p class="muted">No records match these filters.</p>'}</div>`;});return false;}
+function recCsv(){
+  if(!S.rec||!S.rec.length)return toast('Search first, then export',1);
+  const cols=['Time (IST)','EmpID','Name','Dept','Type','Validation','Source','Branch','Lat','Lng','Accuracy','Reason'],q=v=>{v=String(v??'');if(/^[=+\-@]/.test(v))v="'"+v;return '"'+v.replace(/"/g,'""')+'"'};
+  const body=S.rec.map(r=>[fmt(r.At),r.EmpID,r.Name,r.Dept,r.Type,r.Validation,r.Source,r.Branch,r.Lat,r.Lng,r.Accuracy,r.Reason].map(q).join(','));
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['\ufeff'+[cols.map(q).join(',')].concat(body).join('\r\n')],{type:'text/csv'}));a.download='attendance_'+today()+'.csv';a.click();
+}
+async function tabEmp(){
+  const [list,cfg]=await Promise.all([api('adminEmployees'),api('adminConfig')]);S.emps=list;
+  g('tab').innerHTML=`<form class="card" onsubmit="return empSave(event)"><h3>Add or edit employee</h3><div class="row">${field('Employee ID','ei','text','required')}${field('Name','en','text','required')}${field('Department','ed')}${field('Designation','eg')}${field('Branch ID','eb','text','list="bl"')}</div><datalist id="bl">${cfg.branches.map(b=>`<option value="${esc(b.BranchID)}">`).join('')}</datalist>
+  <div class="row"><div><label for="ew">Work type</label><select id="ew"><option>OFFICE</option><option>FIELD</option></select></div><div><label for="er">Role</label><select id="er"><option>EMPLOYEE</option><option>ADMIN</option></select></div><div><label for="ea">Status</label><select id="ea"><option value="1">Active</option><option value="0">Inactive</option></select></div>${field('PIN (6+ characters, blank keeps current)','ep','password','autocomplete="new-password"')}</div><p><button class="btn">Save employee</button></p></form>
+  <div class="card">${tbl(['ID','Name','Dept','Branch','Type','Role','Active',''],list.map(r=>[r.EmpID,r.Name,r.Dept,r.Branch,r.WorkType,r.Role,r.Active==='TRUE'?'Yes':'No',{h:`<button class="btn sm" data-id="${esc(r.EmpID)}" onclick="empEdit(this.dataset.id)">Edit</button>`}]))}</div>`;
+}
+function empEdit(id){const r=S.emps.find(x=>x.EmpID===id);g('ei').value=r.EmpID;g('en').value=r.Name;g('ed').value=r.Dept;g('eg').value=r.Designation;g('eb').value=r.Branch;g('ew').value=r.WorkType;g('er').value=r.Role;g('ea').value=r.Active==='TRUE'?'1':'0';g('ep').value='';scrollTo(0,0);}
+async function empSave(e){e.preventDefault();await run(async()=>{await api('adminSaveEmployee',{EmpID:val('ei'),Name:val('en'),Dept:val('ed'),Designation:val('eg'),Branch:val('eb'),WorkType:val('ew'),Role:val('er'),Active:val('ea')==='1',pin:g('ep').value});toast('Employee saved');await tabEmp();});return false;}
+async function tabLv(){
+  const l=await api('adminLeaves');
+  g('tab').innerHTML=`<div class="card"><h3>Leave requests</h3>${l.length?tbl(['Employee','From','To','Reason','Status',''],l.map(r=>[r.Name+' ('+r.EmpID+')',r.From,r.To,r.Reason,badge(r.Status==='APPROVED'?'VALID':r.Status==='REJECTED'?'REJECTED':'PENDING'),{h:r.Status==='PENDING'?`<button class="btn sm" data-id="${esc(r.LeaveID)}" onclick="lvDo(this.dataset.id,'APPROVED')">Approve</button> <button class="btn sm alt" data-id="${esc(r.LeaveID)}" onclick="lvDo(this.dataset.id,'REJECTED')">Reject</button>`:esc(r.Status)}])):'<p class="muted">No leave requests yet.</p>'}</div>`;
+}
+const lvDo=(id,s)=>run(async()=>{await api('adminLeaveDecide',{leaveId:id,status:s});toast('Updated');await tabLv();});
+async function tabFix(){
+  g('tab').innerHTML=`<form class="card" onsubmit="return fixGo(event)"><h3>Correct attendance</h3><p class="muted">Adds a new CORRECTED record and an audit log entry. Existing records are never changed.</p><div class="row">${field('Employee ID','xe','text','required')}<div><label for="xt">Type</label><select id="xt"><option>CHECK_IN</option><option>CHECK_OUT</option></select></div>${field('Correct time (IST)','xd','datetime-local','required')}</div>${field('Reason (min 10 characters)','xr','text','required minlength="10" maxlength="200"')}<p><button class="btn">Add correction</button></p></form>`;
+}
+async function fixGo(e){e.preventDefault();await run(async()=>{await api('adminAddEvent',{empId:val('xe'),type:val('xt'),time:val('xd'),reason:val('xr')});toast('Correction added');await tabFix();});return false;}
+async function tabSet(){
+  const c=await api('adminConfig');
+  g('tab').innerHTML=`<form class="card" onsubmit="return brSave(event)"><h3>Office locations</h3><div class="row">${field('Branch ID','bi','text','required')}${field('Name','bn','text','required')}${field('Latitude','bla','text','required inputmode="decimal"')}${field('Longitude','blo','text','required inputmode="decimal"')}${field('Radius (m)','br','number','required min="20" max="5000" value="100"')}</div><p class="row"><button class="btn" style="flex:0">Save</button><button type="button" class="btn alt" style="flex:0;white-space:nowrap" onclick="useLoc()">Use my location</button></p>${c.branches.length?tbl(['ID','Name','Lat','Lng','Radius'],c.branches.map(b=>[b.BranchID,b.Name,b.Lat,b.Lng,b.RadiusM+' m'])):'<p class="muted">Add your first office to enable office check-ins.</p>'}</form>
+  <form class="card" onsubmit="return hoSave(event)"><h3>Holidays</h3><div class="row">${field('Date','hd','date','required')}${field('Name','hn')}</div><p><button class="btn">Add holiday</button></p>${c.holidays.length?tbl(['Date','Name',''],c.holidays.map(h=>[h.Date,h.Name,{h:`<button type="button" class="btn sm alt" data-d="${esc(h.Date)}" onclick="hoDel(this.dataset.d)">Remove</button>`}])):'<p class="muted">No holidays added.</p>'}</form>
+  <div class="card"><h3>Rules</h3>${c.settings.map(s=>`<div class="row"><div><label for="s_${esc(s.Key)}">${esc(s.Key)}</label><input id="s_${esc(s.Key)}" value="${esc(s.Value)}"></div><button class="btn sm" style="flex:0" data-k="${esc(s.Key)}" onclick="seSave(this.dataset.k)">Save</button></div>`).join('')}<p class="muted">ShiftStart is HH:MM (24h). WeeklyOff is Mon to Sun, or None.</p></div>`;
+}
+const useLoc=()=>run(async()=>{const l=await getLoc();if(!l)throw {msg:'Location unavailable. Allow location access.'};g('bla').value=l.lat.toFixed(6);g('blo').value=l.lng.toFixed(6);});
+async function brSave(e){e.preventDefault();await run(async()=>{await api('adminSaveBranch',{BranchID:val('bi'),Name:val('bn'),Lat:val('bla'),Lng:val('blo'),RadiusM:val('br')});toast('Saved');await tabSet();});return false;}
+async function hoSave(e){e.preventDefault();await run(async()=>{await api('adminSaveHoliday',{Date:val('hd'),Name:val('hn')});await tabSet();});return false;}
+const hoDel=d=>run(async()=>{await api('adminSaveHoliday',{Date:d,remove:true});await tabSet();});
+const seSave=k=>run(async()=>{await api('adminSaveSetting',{Key:k,Value:val('s_'+k)});toast('Saved');});
+
+if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
+if(API.startsWith('PASTE_')){view('<main><div class="card narrow"><h1>Not configured</h1><p>Open index.html and set API to your Apps Script Web App URL.</p></div></main>');}else boot();
+</script></body></html>
